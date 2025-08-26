@@ -1,0 +1,1 @@
+celery -A compute_worker worker -l info -Q compute-worker -n compute-worker@%n --concurrency=1
