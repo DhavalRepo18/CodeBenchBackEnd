@@ -111,6 +111,11 @@ def run_wrapper(run_args):
     try:
         run.prepare()
         run.start()
+
+        details = fetch_run_details(run)
+        print (details)
+        logger.info(f"Fetched submission details: {details}")
+
         if run.is_scoring:
             run.push_scores()
         run.push_output()
@@ -123,6 +128,24 @@ def run_wrapper(run_args):
     finally:
         run.clean_up()
 
+def fetch_run_details(run):
+    """
+    Fetch submission details for a Run object using its run_args.
+    Adds a `details` attribute to the run.
+    """
+    submission_id = run.run_args["id"]
+    secret = run.run_args["secret"]
+    api_url = run.run_args.get("submissions_api_url", "https://www.codabench.org/api")
+
+    headers = {"Authorization": f"Token {secret}"}
+    url = f"{api_url}/submissions/{submission_id}/get_details/"
+    
+    resp = requests.get(url, headers=headers)
+    if resp.status_code != 200:
+        raise ValueError(f"Failed to fetch submission {submission_id}: {resp.status_code} - {resp.text}")
+    
+    run.details = resp.json()
+    return run.details
 
 def replace_legacy_metadata_command(command, kind, is_scoring, ingestion_only_during_scoring=False):
     vars_to_replace = [
