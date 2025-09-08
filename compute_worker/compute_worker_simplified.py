@@ -18,6 +18,7 @@ from urllib.request import urlretrieve
 from zipfile import ZipFile, BadZipFile
 import os
 import json
+from websocket import create_connection, WebSocketException
 
 import requests
 import websockets
@@ -127,6 +128,7 @@ def run_wrapper(run_args):
         run.scoring()
         run.push_scores()
         run.push_output()
+        run.push_detailed_result()
         run._update_status(STATUS_FINISHED)
     except PreparationException as e:
         run._update_status(STATUS_FAILED, str(e))
@@ -224,6 +226,7 @@ def explore_and_validate_bundle_dir(bundle_path, required_json_key=None):
     bundle_content = {}
     py_files = []
     json_files = []
+    track = ""
 
     # Walk the bundle directory
     for root, dirs, files in os.walk(bundle_path):
@@ -263,8 +266,13 @@ def explore_and_validate_bundle_dir(bundle_path, required_json_key=None):
                 f"❌ Bundle validation failed!\n"
                 f"JSON file '{json_files[0]}' does not contain required key: '{required_json_key}'"
             )
+        else:
+            track = data[required_json_key]
 
     print("✅ Bundle validation passed - All good, no errors.")
+    bundle_content["py_files"] = py_files
+    bundle_content["json_files"] = json_files
+    bundle_content["track"] = track
     return bundle_content
 
 
@@ -296,10 +304,13 @@ class Run:
         self.bundle_dir = os.path.join(self.root_dir, "bundles")
         self.input_dir = os.path.join(self.root_dir, "input")
         self.output_dir = os.path.join(self.root_dir, "output")
+        self.traj_dir = os.path.join(self.root_dir, "trajectory")
+        self.back_stage_result = os.path.join(self.root_dir, "backstageresult")
         self.data_dir = os.path.join(
             HOST_DIRECTORY, "data"
         )  # absolute path to data in the host
         self.logs = {}
+        self.bundle_info = {}
 
         # Details for submission
         self.is_scoring = run_args["is_scoring"]
@@ -390,6 +401,7 @@ class Run:
         else:
             # v1.5 compatibility - get the first html file if detailed_results.html doesn't exists
             html_files = glob.glob(os.path.join(self.output_dir, "*.html"))
+            print(html_files)
             if html_files:
                 return html_files[0]
 
@@ -631,6 +643,7 @@ class Run:
         # This ensures each task has its own independent WebSocket connection
         websocket_url = f"{self.websocket_url}?kind={kind}"
         logger.debug(f"WORKER_MARKER: Connecting to {websocket_url}")
+        """
         websocket = await websockets.connect(websocket_url)
         # websocket = await websockets.connect(self.websocket_url) # old BB
         websocket_errors = (
@@ -700,7 +713,7 @@ class Run:
                         )
                         await asyncio.sleep(2)
                         tries += 1
-
+        """
         self.logs[kind]["end"] = time.time()
 
         logger.debug(f"Process exited with {proc.returncode}")
@@ -712,7 +725,7 @@ class Run:
         logger.debug(
             f"WORKER_MARKER: Disconnecting from {websocket_url}, program counter = {self.completed_program_counter}"
         )
-        await websocket.close()
+        # await websocket.close()
 
     def _get_host_path(self, *paths):
         """Turns an absolute path inside our container, into what the path
@@ -943,20 +956,157 @@ class Run:
         # get the program - user submission
         if self.program_data is not None:
             self._get_bundle(self.program_data, "program", cache=False)
-            explore_and_validate_bundle_dir(
+            self.bundle_info = explore_and_validate_bundle_dir(
                 os.path.join(self.root_dir, "program"), required_json_key="Track"
             )
+        logger.info(os.path.join(self.root_dir, "program"))
 
         # For logging purposes let's dump file names
         for filename in glob.iglob(self.root_dir + "**/*.*", recursive=True):
             logger.info(filename)
 
-    def inference(self):
+    def run_container_engine_cmd_sync(self, engine_cmd, kind):
+        """
+        Fully synchronous replacement for _run_container_engine_cmd.
+        Streams stdout/stderr to a websocket while storing logs.
+        """
+        start = time.time()
+
+        # Start the process
+        proc = subprocess.Popen(
+            engine_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=1,
+            universal_newlines=True,  # read line by line as str
+        )
+
+        # Initialize logs
+        self.logs[kind] = {
+            "proc": proc,
+            "start": start,
+            "end": None,
+            "stdout": {
+                "data": b"",
+                "stream": proc.stdout,
+                "continue": True,
+                "location": self.stdout if kind == "program" else self.ingestion_stdout,
+            },
+            "stderr": {
+                "data": b"",
+                "stream": proc.stderr,
+                "continue": True,
+                "location": self.stderr if kind == "program" else self.ingestion_stderr,
+            },
+        }
+
+        # Connect to websocket (if any)
+        websocket_url = getattr(self, "websocket_url", None)
+        ws = None
+        websocket_url = None  # I disabled uploading the stuff
+        if websocket_url:
+            try:
+                ws = create_connection(f"{websocket_url}?kind={kind}")
+                logger.info(f"Connected to websocket: {websocket_url}")
+            except Exception as e:
+                logger.error(f"Failed to connect websocket: {e}")
+                ws = None
+
+        stdout = self.logs[kind]["stdout"]["stream"]
+        stderr = self.logs[kind]["stderr"]["stream"]
+
+        while True:
+            out_line = stdout.readline()
+            err_line = stderr.readline()
+
+            if out_line:
+                print("STDOUT:", out_line.strip())
+                self.logs[kind]["stdout"]["data"] += out_line.encode()
+                if ws:
+                    try:
+                        ws.send(json.dumps({"kind": kind, "message": out_line}))
+                    except WebSocketException as e:
+                        logger.error(f"WebSocket send failed: {e}")
+
+            if err_line:
+                print("STDERR:", err_line.strip())
+                self.logs[kind]["stderr"]["data"] += err_line.encode()
+                if ws:
+                    try:
+                        ws.send(json.dumps({"kind": kind, "message": err_line}))
+                    except WebSocketException as e:
+                        logger.error(f"WebSocket send failed: {e}")
+
+            if not out_line and not err_line and proc.poll() is not None:
+                break
+
+        # Close streams
+        stdout.close()
+        stderr.close()
+
+        # Close websocket
+        if ws:
+            try:
+                ws.close()
+            except Exception as e:
+                logger.error(f"WebSocket close failed: {e}")
+
+        self.logs[kind]["end"] = time.time()
+        logger.debug(f"Process exited with return code: {proc.returncode}")
+
+        logger.info(f'[exited with {self.logs[kind]["proc"].returncode}]')
+        for key, value in self.logs[kind].items():
+            if key not in ["stdout", "stderr"]:
+                continue
+            if value["data"]:
+                logger.info(f'[{key}]\n{value["data"]}')
+                self._put_file(value["location"], raw_data=value["data"])
+
+        # set logs of this kind to None, since we handled them already
+        logger.info("Program finished")
+        return proc.returncode
+
+    def _execute_track_1(self):
         hostname = utils.nodenames.gethostname()
         self._update_status(
             STATUS_RUNNING, extra_information=f"scoring_hostname-{hostname}"
         )
+        logger.info("Running TRACK 1 program")
+        logger.info(self.bundle_info["py_files"][0])
+        cmd = [
+            "python",
+            "track1/run_track_1.py",
+            "--utterance_ids",
+            "1",
+            "--workflow_path",
+            os.path.join(self.root_dir, "program", self.bundle_info["py_files"][0]),
+            "--traj_directory",
+            self.traj_dir,
+        ]
+        return self.run_container_engine_cmd_sync(cmd, kind="program")
+
+        # now we produce a new file in program_data folder and
+        # overwrite the location
+
+    def _execute_track_2(self):
+        hostname = utils.nodenames.gethostname()
+        self._update_status(
+            STATUS_RUNNING, extra_information=f"scoring_hostname-{hostname}"
+        )
+        logger.info("Running TRACK 2 program")
+
+    def inference(self):
         logger.info("Running inference program")
+        hostname = utils.nodenames.gethostname()
+        self._update_status(
+            STATUS_RUNNING, extra_information=f"scoring_hostname-{hostname}"
+        )
+        if self.bundle_info["track"] == "Task Planning":
+            self._execute_track_1()
+        elif self.bundle_info["track"] == "Task Execution":
+            self._execute_track_2()
+        else:
+            pass
 
     def save_scores(self, score_dict):
         """Write scores.json in the required format"""
@@ -968,12 +1118,36 @@ class Run:
             json.dump(score_dict, f)
         print(f"Scores written to {path}")
 
+    def _score_track_1(self):
+        cmd = [
+            "python",
+            "track1/score_track_1.py",
+            "--utterance_ids",
+            "1",
+            "--traj_directory",
+            self.traj_dir,
+            "--ouput_directory",
+            self.output_dir,
+            "--backstage_directory",
+            self.back_stage_result
+        ]
+        return self.run_container_engine_cmd_sync(cmd, kind="score")
+
+    def _score_track_2(self):
+        pass
+
     def scoring(self):
+        logger.info("Running scoring program")
         hostname = utils.nodenames.gethostname()
         self._update_status(
             STATUS_RUNNING, extra_information=f"scoring_hostname-{hostname}"
         )
-        logger.info("Running scoring program")
+        if self.bundle_info["track"] == "Task Planning":
+            self._score_track_1()
+        elif self.bundle_info["track"] == "Task Execution":
+            self._score_track_2()
+        else:
+            pass
         scores = {"task_acomplished": 0.5}
         self.save_scores(scores)
 
@@ -1022,6 +1196,20 @@ class Run:
         logger.info(resp)
         logger.info(str(resp.content))
 
+    def push_detailed_result(self):
+        logger.info(f'I am in push detailed results : {self.detailed_results_url}')
+        if not self.detailed_results_url:
+            return
+        file_path = self.get_detailed_results_file_path()
+        logger.info(f'I am in push detailed results {file_path}, {self.detailed_results_url}')
+        if file_path:
+            logger.info(
+                f"Updating detailed results {file_path} - {self.detailed_results_url}"
+            )
+            self._put_file(
+                self.detailed_results_url, file=file_path, content_type="text/html"
+            )
+
     def push_output(self):
         """Output is pushed at the end of both prediction and scoring steps."""
         # V1.5 compatibility, write program statuses to metadata file
@@ -1059,4 +1247,4 @@ class Run:
             return
 
         logger.info(f"Destroying submission temp dir: {self.root_dir}")
-        shutil.rmtree(self.root_dir)
+        #shutil.rmtree(self.root_dir)

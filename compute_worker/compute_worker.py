@@ -33,11 +33,16 @@ logger = logging.getLogger()
 # Celery + Rabbit MQ
 # -----------------------------------------------
 # Init celery + rabbit queue definitions
-app = Celery(broker_use_ssl={'cert_reqs': 0})
-app.config_from_object('celery_config')  # grabs celery_config.py
+app = Celery(broker_use_ssl={"cert_reqs": 0})
+app.config_from_object("celery_config")  # grabs celery_config.py
 app.conf.task_queues = [
     # Mostly defining queue here so we can set x-max-priority
-    Queue('compute-worker', Exchange('compute-worker'), routing_key='compute-worker', queue_arguments={'x-max-priority': 10}),
+    Queue(
+        "compute-worker",
+        Exchange("compute-worker"),
+        routing_key="compute-worker",
+        queue_arguments={"x-max-priority": 10},
+    ),
 ]
 
 
@@ -49,7 +54,7 @@ app.conf.task_queues = [
 HOST_DIRECTORY = os.environ.get("HOST_DIRECTORY", "/tmp/codabench/")
 BASE_DIR = "/Users/dhaval/Documents/GitHub/CodeBenchBackEnd/codabench/"  # base directory inside the container
 CACHE_DIR = os.path.join(BASE_DIR, "cache")
-MAX_CACHE_DIR_SIZE_GB = float(os.environ.get('MAX_CACHE_DIR_SIZE_GB', 10))
+MAX_CACHE_DIR_SIZE_GB = float(os.environ.get("MAX_CACHE_DIR_SIZE_GB", 10))
 
 
 # -----------------------------------------------
@@ -92,8 +97,10 @@ else:
 class SubmissionException(Exception):
     pass
 
+
 class DockerImagePullException(Exception):
     pass
+
 
 class ExecutionTimeLimitExceeded(Exception):
     pass
@@ -113,7 +120,7 @@ def run_wrapper(run_args):
         run.start()
 
         details = fetch_run_details(run)
-        print (details)
+        print(details)
         logger.info(f"Fetched submission details: {details}")
 
         if run.is_scoring:
@@ -128,6 +135,7 @@ def run_wrapper(run_args):
     finally:
         run.clean_up()
 
+
 def fetch_run_details(run):
     """
     Fetch submission details for a Run object using its run_args.
@@ -139,26 +147,38 @@ def fetch_run_details(run):
 
     headers = {"Authorization": f"Token {secret}"}
     url = f"{api_url}/submissions/{submission_id}/get_details/"
-    
+
     resp = requests.get(url, headers=headers)
     if resp.status_code != 200:
-        raise ValueError(f"Failed to fetch submission {submission_id}: {resp.status_code} - {resp.text}")
-    
+        raise ValueError(
+            f"Failed to fetch submission {submission_id}: {resp.status_code} - {resp.text}"
+        )
+
     run.details = resp.json()
     return run.details
 
-def replace_legacy_metadata_command(command, kind, is_scoring, ingestion_only_during_scoring=False):
+
+def replace_legacy_metadata_command(
+    command, kind, is_scoring, ingestion_only_during_scoring=False
+):
     vars_to_replace = [
-        ('$input', '/app/input_data' if kind == 'ingestion' else '/app/input'),
-        ('$output', '/app/output'),
-        ('$program', '/app/ingestion_program' if ingestion_only_during_scoring and is_scoring else '/app/program'),
-        ('$ingestion_program', '/app/program'),
-        ('$hidden', '/app/input/ref'),
-        ('$shared', '/app/shared'),
-        ('$submission_program', '/app/ingested_program'),
+        ("$input", "/app/input_data" if kind == "ingestion" else "/app/input"),
+        ("$output", "/app/output"),
+        (
+            "$program",
+            (
+                "/app/ingestion_program"
+                if ingestion_only_during_scoring and is_scoring
+                else "/app/program"
+            ),
+        ),
+        ("$ingestion_program", "/app/program"),
+        ("$hidden", "/app/input/ref"),
+        ("$shared", "/app/shared"),
+        ("$submission_program", "/app/ingested_program"),
         # for v1.8 compatibility
-        ('$tmp', '/app/output'),
-        ('$predictions', '/app/input/res' if is_scoring else '/app/output'),
+        ("$tmp", "/app/output"),
+        ("$predictions", "/app/input/res" if is_scoring else "/app/output"),
     ]
     for var_string, var_replacement in vars_to_replace:
         command = command.replace(var_string, var_replacement)
@@ -184,7 +204,7 @@ def get_folder_size_in_gb(folder):
             total_size += os.path.getsize(path)
         elif os.path.isdir(path):
             total_size += get_folder_size_in_gb(path)
-    return total_size / 1000 / 1000 / 1000 # GB: decimal system (1000^3)
+    return total_size / 1000 / 1000 / 1000  # GB: decimal system (1000^3)
 
 
 def delete_files_in_folder(folder):
@@ -199,7 +219,7 @@ def delete_files_in_folder(folder):
 def is_valid_zip(zip_path):
     # Check zip integrity
     try:
-        with ZipFile(zip_path, 'r') as zf:
+        with ZipFile(zip_path, "r") as zf:
             return zf.testzip() is None
     except BadZipFile:
         return False
@@ -237,7 +257,9 @@ class Run:
         self.bundle_dir = os.path.join(self.root_dir, "bundles")
         self.input_dir = os.path.join(self.root_dir, "input")
         self.output_dir = os.path.join(self.root_dir, "output")
-        self.data_dir = os.path.join(HOST_DIRECTORY, "data")  # absolute path to data in the host
+        self.data_dir = os.path.join(
+            HOST_DIRECTORY, "data"
+        )  # absolute path to data in the host
         self.logs = {}
 
         # Details for submission
@@ -251,20 +273,27 @@ class Run:
         self.scoring_result = run_args.get("scoring_result")
         self.execution_time_limit = run_args["execution_time_limit"]
         # stdout and stderr
-        self.stdout, self.stderr, self.ingestion_stdout, self.ingestion_stderr = self._get_stdout_stderr_file_names(run_args)
+        self.stdout, self.stderr, self.ingestion_stdout, self.ingestion_stderr = (
+            self._get_stdout_stderr_file_names(run_args)
+        )
         self.ingestion_container_name = uuid.uuid4()
         self.program_container_name = uuid.uuid4()
         self.program_data = run_args.get("program_data")
         self.ingestion_program_data = run_args.get("ingestion_program")
         self.input_data = run_args.get("input_data")
         self.reference_data = run_args.get("reference_data")
-        self.ingestion_only_during_scoring = run_args.get('ingestion_only_during_scoring')
-        self.detailed_results_url = run_args.get('detailed_results_url')
+        self.ingestion_only_during_scoring = run_args.get(
+            "ingestion_only_during_scoring"
+        )
+        self.detailed_results_url = run_args.get("detailed_results_url")
+
 
         # During prediction program will be the submission program, during scoring it will be the
         # scoring program
         self.program_exit_code = None
         self.ingestion_program_exit_code = None
+
+        # https://www.codabench.org/competitions/10206/detailed_results/358069
 
         self.program_elapsed_time = None
         self.ingestion_elapsed_time = None
@@ -272,17 +301,19 @@ class Run:
         # Socket connection to stream output of submission
         submission_api_url_parsed = urlparse(self.submissions_api_url)
         websocket_host = submission_api_url_parsed.netloc
-        websocket_scheme = 'ws' if submission_api_url_parsed.scheme == 'http' else 'wss'
+        websocket_scheme = "ws" if submission_api_url_parsed.scheme == "http" else "wss"
         self.websocket_url = f"{websocket_scheme}://{websocket_host}/submission_input/{self.user_pk}/{self.submission_id}/{self.secret}/"
 
         # Nice requests adapter with generous retries/etc.
         self.requests_session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(max_retries=Retry(
-            total=3,
-            backoff_factor=1,
-        ))
-        self.requests_session.mount('http://', adapter)
-        self.requests_session.mount('https://', adapter)
+        adapter = requests.adapters.HTTPAdapter(
+            max_retries=Retry(
+                total=3,
+                backoff_factor=1,
+            )
+        )
+        self.requests_session.mount("http://", adapter)
+        self.requests_session.mount("https://", adapter)
 
     async def watch_detailed_results(self):
         """Watches files alongside scoring + program containers, currently only used
@@ -303,7 +334,9 @@ class Run:
             else:
                 logger.info(time.time() - start)
                 if time.time() - start > expiration_seconds:
-                    timeout_error_message = f"WARNING: Detailed results not written before the execution."
+                    timeout_error_message = (
+                        f"WARNING: Detailed results not written before the execution."
+                    )
                     logger.warning(timeout_error_message)
             await asyncio.sleep(5)
             file_path = self.get_detailed_results_file_path()
@@ -313,24 +346,34 @@ class Run:
                 await self.send_detailed_results(file_path)
 
     def get_detailed_results_file_path(self):
-        default_detailed_results_path = os.path.join(self.output_dir, 'detailed_results.html')
+        default_detailed_results_path = os.path.join(
+            self.output_dir, "detailed_results.html"
+        )
         if os.path.exists(default_detailed_results_path):
             return default_detailed_results_path
         else:
             # v1.5 compatibility - get the first html file if detailed_results.html doesn't exists
-            html_files = glob.glob(os.path.join(self.output_dir, '*.html'))
+            html_files = glob.glob(os.path.join(self.output_dir, "*.html"))
             if html_files:
                 return html_files[0]
 
     async def send_detailed_results(self, file_path):
-        logger.info(f"Updating detailed results {file_path} - {self.detailed_results_url}")
-        self._put_file(self.detailed_results_url, file=file_path, content_type='text/html')
+        logger.info(
+            f"Updating detailed results {file_path} - {self.detailed_results_url}"
+        )
+        self._put_file(
+            self.detailed_results_url, file=file_path, content_type="text/html"
+        )
         websocket_url = f"{self.websocket_url}?kind=detailed_results"
         logger.info(f"Connecting to {websocket_url} for detailed results")
         async with websockets.connect(websocket_url) as websocket:
-            await websocket.send(json.dumps({
-                "kind": 'detailed_result_update',
-            }))
+            await websocket.send(
+                json.dumps(
+                    {
+                        "kind": "detailed_result_update",
+                    }
+                )
+            )
 
     def _get_stdout_stderr_file_names(self, run_args):
         # run_args should be the run_args argument passed to __init__ from the run_wrapper.
@@ -360,12 +403,16 @@ class Run:
         if resp.status_code == 200:
             logger.info("Submission updated successfully!")
         else:
-            logger.info(f"Submission patch failed with status = {resp.status_code}, and response = \n{resp.content}")
+            logger.info(
+                f"Submission patch failed with status = {resp.status_code}, and response = \n{resp.content}"
+            )
             raise SubmissionException("Failure updating submission data.")
 
     def _update_status(self, status, extra_information=None):
         if status not in AVAILABLE_STATUSES:
-            raise SubmissionException(f"Status '{status}' is not in available statuses: {AVAILABLE_STATUSES}")
+            raise SubmissionException(
+                f"Status '{status}' is not in available statuses: {AVAILABLE_STATUSES}"
+            )
 
         data = {
             "status": status,
@@ -385,9 +432,13 @@ class Run:
         retries, max_retries = (0, 3)
         while retries < max_retries:
             try:
-                cmd = [CONTAINER_ENGINE_EXECUTABLE, 'pull', image_name]
+                cmd = [CONTAINER_ENGINE_EXECUTABLE, "pull", image_name]
                 container_engine_pull = check_output(cmd)
-                logger.info("Pull complete for image: {0} with output of {1}".format(image_name, container_engine_pull))
+                logger.info(
+                    "Pull complete for image: {0} with output of {1}".format(
+                        image_name, container_engine_pull
+                    )
+                )
                 break  # Break if the loop is successful
             except CalledProcessError as pull_error:
                 retries += 1
@@ -398,7 +449,7 @@ class Run:
                     docker_pull_fail_data = {
                         "type": "Docker_Image_Pull_Fail",
                         "error_message": error_message,
-                        "is_scoring": self.is_scoring
+                        "is_scoring": self.is_scoring,
                     }
                     # Send data to be written to ingestion logs
                     self._update_submission(docker_pull_fail_data)
@@ -418,21 +469,25 @@ class Run:
         # Create a unique websocket URL for error messages
         websocket_url = f"{self.websocket_url}?kind=error_logs"
         logger.info(f"Connecting to {websocket_url} to send error message")
-        
+
         logger.info(f"Connecting to {websocket_url} to send docker image pull error")
 
         # connect to web socket
         websocket = await websockets.connect(websocket_url)
 
         # define websocket errors
-        websocket_errors = (socket.gaierror, websockets.WebSocketException, websockets.ConnectionClosedError, ConnectionRefusedError)
+        websocket_errors = (
+            socket.gaierror,
+            websockets.WebSocketException,
+            websockets.ConnectionClosedError,
+            ConnectionRefusedError,
+        )
 
         try:
             # send message
-            await websocket.send(json.dumps({
-                "kind": "stderr",
-                "message": error_message
-            }))
+            await websocket.send(
+                json.dumps({"kind": "stderr", "message": error_message})
+            )
 
         except websocket_errors:
             # handle websocket errors
@@ -463,13 +518,15 @@ class Run:
         if cache:
             # Hash url and download it if it doesn't exist
             url_without_params = url.split("?")[0]
-            url_hash = hashlib.sha256(url_without_params.encode('utf8')).hexdigest()
+            url_hash = hashlib.sha256(url_without_params.encode("utf8")).hexdigest()
             bundle_file = os.path.join(CACHE_DIR, url_hash)
             download_needed = not os.path.exists(bundle_file)
         else:
             if not os.path.exists(self.bundle_dir):
                 os.mkdir(self.bundle_dir)
-            bundle_file = tempfile.NamedTemporaryFile(dir=self.bundle_dir, delete=False).name
+            bundle_file = tempfile.NamedTemporaryFile(
+                dir=self.bundle_dir, delete=False
+            ).name
 
         # Fetch and extract
         retries, max_retries = (0, 10)
@@ -479,10 +536,12 @@ class Run:
                     # Download the bundle
                     urlretrieve(url, bundle_file)
                 except HTTPError:
-                    raise SubmissionException(f"Problem fetching {url} to put in {destination}")
+                    raise SubmissionException(
+                        f"Problem fetching {url} to put in {destination}"
+                    )
             try:
                 # Extract the contents to destination directory
-                with ZipFile(bundle_file, 'r') as z:
+                with ZipFile(bundle_file, "r") as z:
                     z.extractall(os.path.join(self.root_dir, destination))
                 break  # Break if the loop is successful
             except BadZipFile:
@@ -505,9 +564,7 @@ class Run:
         """
         start = time.time()
         proc = await asyncio.create_subprocess_exec(
-            *engine_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            *engine_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
 
         self.logs[kind] = {
@@ -515,16 +572,16 @@ class Run:
             "start": start,
             "end": None,
             "stdout": {
-                "data": b'',
+                "data": b"",
                 "stream": proc.stdout,
                 "continue": True,
-                "location": self.stdout if kind == 'program' else self.ingestion_stdout
+                "location": self.stdout if kind == "program" else self.ingestion_stdout,
             },
             "stderr": {
-                "data": b'',
+                "data": b"",
                 "stream": proc.stderr,
                 "continue": True,
-                "location": self.stderr if kind == 'program' else self.ingestion_stderr
+                "location": self.stderr if kind == "program" else self.ingestion_stderr,
             },
         }
 
@@ -534,7 +591,12 @@ class Run:
         logger.debug(f"WORKER_MARKER: Connecting to {websocket_url}")
         websocket = await websockets.connect(websocket_url)
         # websocket = await websockets.connect(self.websocket_url) # old BB
-        websocket_errors = (socket.gaierror, websockets.WebSocketException, websockets.ConnectionClosedError, ConnectionRefusedError)
+        websocket_errors = (
+            socket.gaierror,
+            websockets.WebSocketException,
+            websockets.ConnectionClosedError,
+            ConnectionRefusedError,
+        )
 
         # Function to read a line, if the line is larger than the buffer size we will
         # return the buffer so we can continue reading until we get a newline, rather
@@ -549,19 +611,24 @@ class Run:
                 # If we get a LimitOverrunError, we will return the buffer so we can continue reading
                 return await stream.read(e.consumed)
 
-        while any(v["continue"] for k, v in self.logs[kind].items() if k in ['stdout', 'stderr']):
+        while any(
+            v["continue"]
+            for k, v in self.logs[kind].items()
+            if k in ["stdout", "stderr"]
+        ):
             try:
-                logs = [self.logs[kind][key] for key in ('stdout', 'stderr')]
+                logs = [self.logs[kind][key] for key in ("stdout", "stderr")]
                 for value in logs:
                     try:
-                        out = await asyncio.wait_for(_readline_or_chunk(value["stream"]), timeout=0.1)
+                        out = await asyncio.wait_for(
+                            _readline_or_chunk(value["stream"]), timeout=0.1
+                        )
                         if out:
                             value["data"] += out
                             print("WS: " + str(out))
-                            await websocket.send(json.dumps({
-                                "kind": kind,
-                                "message": out.decode()
-                            }))
+                            await websocket.send(
+                                json.dumps({"kind": kind, "message": out.decode()})
+                            )
                         else:
                             value["continue"] = False
                     except asyncio.TimeoutError:
@@ -580,11 +647,15 @@ class Run:
                 tries = 0
                 while tries < 3 and not websocket.open:
                     try:
-                        logger.debug(f"\n\nAttempting to reconnect in 2 seconds (attempt {tries+1}/3)")
+                        logger.debug(
+                            f"\n\nAttempting to reconnect in 2 seconds (attempt {tries+1}/3)"
+                        )
                         websocket = await websockets.connect(websocket_url)
                         logger.debug(f"\n\nSuccessfully reconnected to {websocket_url}")
                     except websocket_errors:
-                        logger.error(f"\n\nReconnection attempt {tries+1} failed: {websocket_errors}")
+                        logger.error(
+                            f"\n\nReconnection attempt {tries+1} failed: {websocket_errors}"
+                        )
                         await asyncio.sleep(2)
                         tries += 1
 
@@ -596,7 +667,9 @@ class Run:
         # Communicate that the program is closing
         self.completed_program_counter += 1
 
-        logger.debug(f"WORKER_MARKER: Disconnecting from {websocket_url}, program counter = {self.completed_program_counter}")
+        logger.debug(
+            f"WORKER_MARKER: Disconnecting from {websocket_url}, program counter = {self.completed_program_counter}"
+        )
         await websocket.close()
 
     def _get_host_path(self, *paths):
@@ -608,7 +681,7 @@ class Run:
         path = os.path.join(*paths)
 
         # pull front of path, which points to the location inside the container
-        path = path[len(BASE_DIR):]
+        path = path[len(BASE_DIR) :]
 
         # add host to front, so when we run commands in the container on the host they
         # can be seen properly
@@ -636,9 +709,9 @@ class Run:
             return
 
         if os.path.exists(os.path.join(program_dir, "metadata.yaml")):
-            metadata_path = 'metadata.yaml'
+            metadata_path = "metadata.yaml"
         elif os.path.exists(os.path.join(program_dir, "metadata")):
-            metadata_path = 'metadata'
+            metadata_path = "metadata"
         else:
             # Display a warning in logs when there is no metadata file in submission/program dir
             if kind == "program":
@@ -650,10 +723,12 @@ class Run:
                 shutil.copytree(program_dir, self.output_dir)
                 return
             else:
-                raise SubmissionException("Program directory missing 'metadata.yaml/metadata'")
+                raise SubmissionException(
+                    "Program directory missing 'metadata.yaml/metadata'"
+                )
 
         logger.info(f"Metadata path is {os.path.join(program_dir, metadata_path)}")
-        with open(os.path.join(program_dir, metadata_path), 'r') as metadata_file:
+        with open(os.path.join(program_dir, metadata_path), "r") as metadata_file:
             try:  # try to find a command in the metadata, in other cases set metadata to None
                 metadata = yaml.load(metadata_file.read(), Loader=yaml.FullLoader)
                 logger.info(f"Metadata contains:\n {metadata}")
@@ -665,7 +740,9 @@ class Run:
                 print("Error parsing YAML file: ", e)
                 command = None
             if not command and kind == "ingestion":
-                raise SubmissionException("Program directory missing 'command' in metadata")
+                raise SubmissionException(
+                    "Program directory missing 'command' in metadata"
+                )
             elif not command:
                 logger.info(
                     f"Warning: {program_dir} has no command in metadata, continuing anyway "
@@ -675,31 +752,32 @@ class Run:
 
         engine_cmd = [
             CONTAINER_ENGINE_EXECUTABLE,
-            'run',
+            "run",
             # Remove it after run
-            '--rm',
+            "--rm",
             f'--name={self.ingestion_container_name if kind == "ingestion" else self.program_container_name}',
-
             # Don't allow subprocesses to raise privileges
-            '--security-opt=no-new-privileges',
-
+            "--security-opt=no-new-privileges",
             # Set the volumes
-            '-v', f'{self._get_host_path(program_dir)}:/app/program',
-            '-v', f'{self._get_host_path(self.output_dir)}:/app/output',
-            '-v', f'{self.data_dir}:/app/data:ro',
-
+            "-v",
+            f"{self._get_host_path(program_dir)}:/app/program",
+            "-v",
+            f"{self._get_host_path(self.output_dir)}:/app/output",
+            "-v",
+            f"{self.data_dir}:/app/data:ro",
             # Start in the right directory
-            '-w', '/app/program',
-
+            "-w",
+            "/app/program",
             # Don't buffer python output, so we don't lose any
-            '-e', 'PYTHONUNBUFFERED=1',
+            "-e",
+            "PYTHONUNBUFFERED=1",
         ]
 
         # GPU or not
         if os.environ.get("USE_GPU"):
-            engine_cmd.extend(['--gpus', 'all'])
+            engine_cmd.extend(["--gpus", "all"])
 
-        if kind == 'ingestion':
+        if kind == "ingestion":
             # program here is either scoring program or submission, depends on if this ran during Prediction or Scoring
             if self.ingestion_only_during_scoring and self.is_scoring:
                 # submission program moved to 'input/res' with shutil.move() above
@@ -707,18 +785,27 @@ class Run:
             else:
                 ingested_program_location = "program"
 
-            engine_cmd += ['-v', f'{self._get_host_path(self.root_dir, ingested_program_location)}:/app/ingested_program']
+            engine_cmd += [
+                "-v",
+                f"{self._get_host_path(self.root_dir, ingested_program_location)}:/app/ingested_program",
+            ]
 
         if self.input_data:
-            engine_cmd += ['-v', f'{self._get_host_path(self.root_dir, "input_data")}:/app/input_data']
+            engine_cmd += [
+                "-v",
+                f'{self._get_host_path(self.root_dir, "input_data")}:/app/input_data',
+            ]
 
         if self.is_scoring:
             # For scoring programs, we want to have a shared directory just in case we have an ingestion program.
             # This will add the share dir regardless of ingestion or scoring, as long as we're `is_scoring`
-            engine_cmd += ['-v', f'{self._get_host_path(self.root_dir, "shared")}:/app/shared']
+            engine_cmd += [
+                "-v",
+                f'{self._get_host_path(self.root_dir, "shared")}:/app/shared',
+            ]
 
             # Input from submission (or submission + ingestion combo)
-            engine_cmd += ['-v', f'{self._get_host_path(self.input_dir)}:/app/input']
+            engine_cmd += ["-v", f"{self._get_host_path(self.input_dir)}:/app/input"]
 
         # Set the image name (i.e. "codalab/codalab-legacy:py37") for the container
         engine_cmd += [self.container_image]
@@ -728,11 +815,11 @@ class Run:
             command=command,
             kind=kind,
             is_scoring=self.is_scoring,
-            ingestion_only_during_scoring=self.ingestion_only_during_scoring
+            ingestion_only_during_scoring=self.ingestion_only_during_scoring,
         )
 
         # Append the actual program to run
-        engine_cmd += command.split(' ')
+        engine_cmd += command.split(" ")
 
         logger.info(f"Running program = {' '.join(engine_cmd)}")
 
@@ -740,49 +827,51 @@ class Run:
         return await self._run_container_engine_cmd(engine_cmd, kind=kind)
 
     def _put_dir(self, url, directory):
-        """ Zip the directory and send it to the given URL using _put_file.
-        """
+        """Zip the directory and send it to the given URL using _put_file."""
         logger.info("Putting dir %s in %s" % (directory, url))
         retries, max_retries = (0, 3)
         while retries < max_retries:
             # Zip the directory
             start_time = time.time()
-            zip_path = make_archive(os.path.join(self.root_dir, str(uuid.uuid4())), 'zip', directory)
+            zip_path = make_archive(
+                os.path.join(self.root_dir, str(uuid.uuid4())), "zip", directory
+            )
             duration = time.time() - start_time
             logger.info(f"Time needed to zip archive: {duration} seconds.")
-            if is_valid_zip(zip_path): # Check zip integrity
-                self._put_file(url, file=zip_path) # Send the file
-                break # Leave the loop in case of success
+            if is_valid_zip(zip_path):  # Check zip integrity
+                self._put_file(url, file=zip_path)  # Send the file
+                break  # Leave the loop in case of success
             else:
                 retries += 1
                 if retries >= max_retries:
                     raise Exception("ZIP file is corrupted or incomplete.")
                 else:
                     logger.info("Failed. Retrying in 30 seconds...")
-                    time.sleep(30) # Wait 30 seconds before retrying
+                    time.sleep(30)  # Wait 30 seconds before retrying
 
-    def _put_file(self, url, file=None, raw_data=None, content_type='application/zip'):
-        """ Send the file in the storage.
-        """
+    def _put_file(self, url, file=None, raw_data=None, content_type="application/zip"):
+        """Send the file in the storage."""
         if file and raw_data:
             raise Exception("Cannot put both a file and raw_data")
 
         headers = {
             # For Azure only, other systems ignore these headers
-            'x-ms-blob-type': 'BlockBlob',
-            'x-ms-version': '2018-03-28',
+            "x-ms-blob-type": "BlockBlob",
+            "x-ms-version": "2018-03-28",
         }
         if content_type:
-            headers['Content-Type'] = content_type
+            headers["Content-Type"] = content_type
         if file:
             logger.info("Putting file %s in %s" % (file, url))
-            data = open(file, 'rb')
-            headers['Content-Length'] = str(os.path.getsize(file))
+            data = open(file, "rb")
+            headers["Content-Length"] = str(os.path.getsize(file))
         elif raw_data:
             logger.info("Putting raw data %s in %s" % (raw_data, url))
             data = raw_data
         else:
-            raise SubmissionException('Must provide data, both file and raw_data cannot be empty')
+            raise SubmissionException(
+                "Must provide data, both file and raw_data cannot be empty"
+            )
 
         resp = self.requests_session.put(
             url,
@@ -790,8 +879,8 @@ class Run:
             headers=headers,
         )
         logger.info("*** PUT RESPONSE: ***")
-        logger.info(f'response: {resp}')
-        logger.info(f'content: {resp.content}')
+        logger.info(f"response: {resp}")
+        logger.info(f"content: {resp.content}")
 
     def _prep_cache_dir(self, max_size=MAX_CACHE_DIR_SIZE_GB):
         if not os.path.exists(CACHE_DIR):
@@ -815,19 +904,19 @@ class Run:
         # sub folder.
         bundles = [
             # (url to file, relative folder destination)
-            (self.program_data, 'program'),
-            (self.ingestion_program_data, 'ingestion_program'),
-            (self.input_data, 'input_data'),
-            (self.reference_data, 'input/ref'),
+            (self.program_data, "program"),
+            (self.ingestion_program_data, "ingestion_program"),
+            (self.input_data, "input_data"),
+            (self.reference_data, "input/ref"),
         ]
         if self.is_scoring:
             # Send along submission result so scoring_program can get access
-            bundles += [(self.prediction_result, 'input/res')]
+            bundles += [(self.prediction_result, "input/res")]
 
         for url, path in bundles:
             if url is not None:
                 # At the moment let's just cache input & reference data
-                cache_this_bundle = path in ('input_data', 'input/ref')
+                cache_this_bundle = path in ("input_data", "input/ref")
                 zip_file = self._get_bundle(url, path, cache=cache_this_bundle)
 
                 # TODO: When we have `is_scoring_only` this needs to change...
@@ -840,7 +929,7 @@ class Run:
                     self._update_submission({"md5": checksum})
 
         # For logging purposes let's dump file names
-        for filename in glob.iglob(self.root_dir + '**/*.*', recursive=True):
+        for filename in glob.iglob(self.root_dir + "**/*.*", recursive=True):
             logger.info(filename)
 
         # Before the run starts we want to download images, they may take a while to download
@@ -850,17 +939,21 @@ class Run:
     def start(self):
         hostname = utils.nodenames.gethostname()
         if self.is_scoring:
-            self._update_status(STATUS_RUNNING, extra_information=f"scoring_hostname-{hostname}")
+            self._update_status(
+                STATUS_RUNNING, extra_information=f"scoring_hostname-{hostname}"
+            )
         else:
-            self._update_status(STATUS_RUNNING, extra_information=f"ingestion_hostname-{hostname}")
+            self._update_status(
+                STATUS_RUNNING, extra_information=f"ingestion_hostname-{hostname}"
+            )
         program_dir = os.path.join(self.root_dir, "program")
         ingestion_program_dir = os.path.join(self.root_dir, "ingestion_program")
 
         logger.info("Running scoring program, and then ingestion program")
         loop = asyncio.new_event_loop()
         gathered_tasks = asyncio.gather(
-            self._run_program_directory(program_dir, kind='program'),
-            self._run_program_directory(ingestion_program_dir, kind='ingestion'),
+            self._run_program_directory(program_dir, kind="program"),
+            self._run_program_directory(ingestion_program_dir, kind="ingestion"),
             self.watch_detailed_results(),
             loop=loop,
         )
@@ -876,7 +969,7 @@ class Run:
             execution_time_limit_exceeded_data = {
                 "type": "Execution_Time_Limit_Exceeded",
                 "error_message": error_message,
-                "is_scoring": self.is_scoring
+                "is_scoring": self.is_scoring,
             }
             # Send data to be written to ingestion/scoring std_err
             self._update_submission(execution_time_limit_exceeded_data)
@@ -892,24 +985,26 @@ class Run:
                     elapsed_time = self.execution_time_limit
                 return_code = logs["proc"].returncode
                 if return_code is None:
-                    logger.info('No return code from Process. Killing it')
-                    if kind == 'ingestion':
+                    logger.info("No return code from Process. Killing it")
+                    if kind == "ingestion":
                         program_to_kill = self.ingestion_container_name
                     else:
                         program_to_kill = self.program_container_name
                     # Try and stop the program. If stop does not succeed
-                    kill_code = subprocess.call([CONTAINER_ENGINE_EXECUTABLE, 'stop', str(program_to_kill)])
-                    logger.info(f'Kill process returned {kill_code}')
-                if kind == 'program':
+                    kill_code = subprocess.call(
+                        [CONTAINER_ENGINE_EXECUTABLE, "stop", str(program_to_kill)]
+                    )
+                    logger.info(f"Kill process returned {kill_code}")
+                if kind == "program":
                     self.program_exit_code = return_code
                     self.program_elapsed_time = elapsed_time
-                elif kind == 'ingestion':
+                elif kind == "ingestion":
                     self.ingestion_program_exit_code = return_code
                     self.ingestion_elapsed_time = elapsed_time
 
                 logger.info(f'[exited with {logs["proc"].returncode}]')
                 for key, value in logs.items():
-                    if key not in ['stdout', 'stderr']:
+                    if key not in ["stdout", "stderr"]:
                         continue
                     if value["data"]:
                         logger.info(f'[{key}]\n{value["data"]}')
@@ -937,16 +1032,22 @@ class Run:
                 try:
                     scores = json.load(f)
                 except json.decoder.JSONDecodeError as e:
-                    raise SubmissionException(f"Could not decode scores json properly, it contains an error.\n{e.msg}")
+                    raise SubmissionException(
+                        f"Could not decode scores json properly, it contains an error.\n{e.msg}"
+                    )
 
         elif os.path.exists(os.path.join(self.output_dir, "scores.txt")):
             scores_file = os.path.join(self.output_dir, "scores.txt")
             with open(scores_file) as f:
                 scores = yaml.load(f, yaml.Loader)
         else:
-            raise SubmissionException("Could not find scores file, did the scoring program output it?")
+            raise SubmissionException(
+                "Could not find scores file, did the scoring program output it?"
+            )
 
-        url = f"{self.submissions_api_url}/upload_submission_scores/{self.submission_id}/"
+        url = (
+            f"{self.submissions_api_url}/upload_submission_scores/{self.submission_id}/"
+        )
         data = {
             "secret": self.secret,
             "scores": scores,
@@ -960,22 +1061,24 @@ class Run:
         """Output is pushed at the end of both prediction and scoring steps."""
         # V1.5 compatibility, write program statuses to metadata file
         prog_status = {
-            'exitCode': self.program_exit_code,
+            "exitCode": self.program_exit_code,
             # for v1.5 compat, send `ingestion_elapsed_time` if no `program_elapsed_time`
-            'elapsedTime': self.program_elapsed_time or self.ingestion_elapsed_time,
-            'ingestionExitCode': self.ingestion_program_exit_code,
-            'ingestionElapsedTime': self.ingestion_elapsed_time,
+            "elapsedTime": self.program_elapsed_time or self.ingestion_elapsed_time,
+            "ingestionExitCode": self.ingestion_program_exit_code,
+            "ingestionElapsedTime": self.ingestion_elapsed_time,
         }
 
         logger.info(f"Metadata output: {prog_status}")
 
-        metadata_path = os.path.join(self.output_dir, 'metadata')
+        metadata_path = os.path.join(self.output_dir, "metadata")
 
         if os.path.exists(metadata_path):
-            raise SubmissionException("Error, the output directory already contains a metadata file. This file is used "
-                                      "to store exitCode and other data, do not write to this file manually.")
+            raise SubmissionException(
+                "Error, the output directory already contains a metadata file. This file is used "
+                "to store exitCode and other data, do not write to this file manually."
+            )
 
-        with open(metadata_path, 'w') as f:
+        with open(metadata_path, "w") as f:
             f.write(yaml.dump(prog_status, default_flow_style=False))
 
         if not self.is_scoring:
@@ -985,7 +1088,9 @@ class Run:
 
     def clean_up(self):
         if os.environ.get("CODALAB_IGNORE_CLEANUP_STEP"):
-            logger.info(f"CODALAB_IGNORE_CLEANUP_STEP mode enabled, ignoring clean up of: {self.root_dir}")
+            logger.info(
+                f"CODALAB_IGNORE_CLEANUP_STEP mode enabled, ignoring clean up of: {self.root_dir}"
+            )
             return
 
         logger.info(f"Destroying submission temp dir: {self.root_dir}")
