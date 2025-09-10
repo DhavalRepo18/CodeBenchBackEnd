@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 from collections import defaultdict
+from functools import partial
 from dotenv import load_dotenv
 from reactxen.agents.evaluation_agent.agent import EvaluationAgent
 from reactxen.utils.model_inference import watsonx_llm
@@ -12,6 +13,10 @@ from huggingface_hub import login
 load_dotenv()
 logger = get_custom_logger(__name__)
 login(os.getenv("HF_APIKEY", None))
+
+
+TEMP = 0.3
+NUM_ITER = 5
 
 
 def generate_html_report(
@@ -91,9 +96,7 @@ def generate_html_report(
     html += "</body></html>"
 
     output_file = os.path.join(ouput_directory, output_file)
-    os.makedirs(
-            os.path.dirname(output_file), exist_ok=True
-        )
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with open(output_file, "w") as f:
         f.write(html)
 
@@ -119,7 +122,7 @@ def evaluate(
         # check if the file is a json file
         if file.endswith(".json"):
             splits = file.split("_")
-            model_id = 12
+            model_id = 16
             question_id = int(splits[1])
             # open the file
             with open(os.path.join(traj_directory, file), "r") as f:
@@ -137,24 +140,63 @@ def evaluate(
                 assert (
                     utterance["text"] == task
                 ), f"task mismatch: {utterance['text']} vs {task}"
-                evaluation_agent = EvaluationAgent(
-                    llm=watsonx_llm, model_id="mistralai/mistral-large", max_retries=2
-                )
-                result = evaluation_agent.evaluate_response(
-                    question=utterance["text"],
-                    agent_response=final_answer,
-                    characteristic_answer=utterance["characteristic_form"],
-                    agent_think=agent_think,
-                )
+
+                stats = {
+                    "task_completion": 0,
+                    "data_retrieval_accuracy": 0,
+                    "generalized_result_verification": 0,
+                    "agent_sequence_correct": 0,
+                    "clarity_and_justification": 0,
+                    "hallucinations": 0,
+                }
+                suggestions = []
+                itemStats = {}
+                for key in stats:
+                    itemStats[key] = 0
+
+                for _ in range(NUM_ITER):
+                    selected_llm_family = partial(
+                        watsonx_llm, max_tokens=8192, temperature=TEMP
+                    )
+                    evaluation_agent = EvaluationAgent(
+                        llm=selected_llm_family, model_id=model_id, max_retries=2
+                    )
+                    try:
+                        review_resultFull = evaluation_agent.evaluate_response(
+                            question=utterance["text"],
+                            agent_response=final_answer,
+                            characteristic_answer=utterance["characteristic_form"],
+                            agent_think=agent_think,
+                        )
+                    except BaseException as e:
+                        print(f"EXCEPTION: {e}")
+                        continue
+
+                    for key in stats:
+                        if key not in review_resultFull:
+                            print(f"cannnot find {key} in {review_resultFull}")
+                            continue
+
+                        if review_resultFull[key]:
+                            itemStats[key] += 1
+
+                    if "suggestions" in review_resultFull:
+                        suggestions.append(stats["suggestions"])
+
+                result = {}
+                for key in stats:
+                    if itemStats[key] > (NUM_ITER / 2.0):
+                        result[key] = 1
+                    else:
+                        result[key] = 0
                 result["question"] = utterance["text"]
                 result["model_id"] = model_id
                 result["question_id"] = question_id
+                result["suggestions"] = suggestions
                 all_results.append(result)
 
     results_file = os.path.join(backstage_directory, "evaluation_result.json")
-    os.makedirs(
-            os.path.dirname(results_file), exist_ok=True
-        )
+    os.makedirs(os.path.dirname(results_file), exist_ok=True)
 
     with open(results_file, "w") as f:
         json.dump(all_results, f, indent=4)
